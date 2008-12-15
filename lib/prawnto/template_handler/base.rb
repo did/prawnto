@@ -4,6 +4,17 @@ module Prawnto
 
       attr_reader :prawnto_options
 
+      # Without overriding it, it does not work, do not know why.
+      def initialize(view = nil)
+        @view = view
+      end
+
+      # Hack for Rails 2.2. Having compilable templates with Prawn does not make sense.
+      # so we shortcut the compilation stuff.
+      def self.call(template)
+        "#{name}.new(self).render(template, local_assigns)"
+      end
+
       # TODO: kept around from railspdf-- maybe not needed anymore? should check.
       def ie_request?
         @view.request.env['HTTP_USER_AGENT'] =~ /msie/i
@@ -36,37 +47,25 @@ module Prawnto
         set_disposition
       end
 
-      def build_source_to_establish_locals(template)
-        prawnto_locals = {}
-        if dsl = @prawnto_options[:dsl]
-          if dsl.kind_of?(Array)
-            dsl.each {|v| v = v.to_s.gsub(/^@/,''); prawnto_locals[v]="@#{v}"}
-          elsif dsl.kind_of?(Hash)
-            prawnto_locals.merge!(dsl)
-          end
-        end
-        prawnto_locals.merge!(template.locals)
-        prawnto_locals.map {|k,v| "#{k} = #{v};"}.join("")
-      end
-
       def pull_prawnto_options
         @prawnto_options = @view.controller.send :compute_prawnto_options
       end
 
-      def render(template)
+      def render(template, local_assigns)
         pull_prawnto_options
         build_headers
-
-        source = build_source_to_establish_locals(template)
-        if @prawnto_options[:dsl]
-          source += "pdf.instance_eval do\n#{template.source}\nend"
-        else
-          source += "\n#{template.source}"
+        
+        # store all the instance variables of the controller so that
+        # we do not need the :dsl option anymore.
+        variables = @view.controller.instance_variables.inject({}) do |h, v| 
+          h.merge!(v => @view.controller.instance_variable_get(v))
         end
 
-        pdf = Prawn::Document.new(@prawnto_options[:prawn])
-        @view.instance_eval source, template.filename, 1
-        pdf.render
+        (Prawn::Document.new(@prawnto_options[:prawn]) do
+          # set the instance variables of the controller for the prawn template
+          variables.each { |name, value| instance_variable_set name, value }
+          eval template.source
+        end).render
       end
 
     end
